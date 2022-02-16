@@ -10,19 +10,15 @@
 #include "strsafe.h"
 #include <list>
 
-#define MAXPOINTS 100
-
+// block the size of the touchpad. This is discoverable via HID but for simplicity its hard coded here
 POINT touchpadSize{ 2000, 1200 };
 
-// You will use this array to track touch points
+// touch points data
+#define MAXPOINTS 10
 int points[MAXPOINTS][2];
-
-// You will use this array to switch the color / track ids
+// color 
 int idLookup[MAXPOINTS];
 
-
-// You can make the touch points larger
-// by changing this radius value
 static int radius = 50;
 static int mouseradius = 20;
 static BOOL TouchpadExists = FALSE;
@@ -42,9 +38,8 @@ COLORREF colors[] = { RGB(153,255,51),
                       RGB(0,51,153)
 };
 
-#define MAX_LOADSTRING 100
-
 // Global Variables:
+#define MAX_LOADSTRING 100
 HINSTANCE hInst;                                // current instance
 WCHAR szTitle[MAX_LOADSTRING];                  // The title bar text
 WCHAR szWindowClass[MAX_LOADSTRING];            // the main window class name
@@ -54,8 +49,7 @@ ATOM                MyRegisterClass(HINSTANCE hInstance);
 BOOL                InitInstance(HINSTANCE, int);
 LRESULT CALLBACK    WndProc(HWND, UINT, WPARAM, LPARAM);
 INT_PTR CALLBACK    About(HWND, UINT, WPARAM, LPARAM);
-
-int wmId, wmEvent, i, x, y;
+int wmId;
 
 UINT cInputs;
 PTOUCHINPUT pInputs;
@@ -139,352 +133,275 @@ struct OrderLinkCollection
     }
 };
 
-class TouchpadHelper
+bool Exists()
 {
-public: 
-    static bool Exists()
+    UINT deviceListCount = 0;
+    UINT rawInputDeviceListSize = (UINT)sizeof(RAWINPUTDEVICELIST);
+
+    if (GetRawInputDeviceList(
+        NULL,
+        &deviceListCount,
+        rawInputDeviceListSize) != 0)
     {
-        UINT deviceListCount = 0;
-        UINT rawInputDeviceListSize = (UINT)sizeof(RAWINPUTDEVICELIST);
-
-        if (GetRawInputDeviceList(
-            NULL,
-            &deviceListCount,
-            rawInputDeviceListSize) != 0)
-        {
-            return false;
-        }
-
-        auto devices = new RAWINPUTDEVICELIST[deviceListCount];
-
-        if (GetRawInputDeviceList(
-            devices,
-            &deviceListCount,
-            rawInputDeviceListSize) != deviceListCount)
-        {
-            return false;
-        }
-
-        for(int count = 0; count < deviceListCount; count++)
-        {
-            auto device = devices[count];
-            if (device.dwType != RIM_TYPEHID)
-            {
-                continue;
-            }
-
-            UINT deviceInfoSize = 0;
-
-            if (GetRawInputDeviceInfo(
-                device.hDevice,
-                RIDI_DEVICEINFO,
-                NULL,
-                &deviceInfoSize) != 0)
-            {
-                continue;
-            }
-
-            RID_DEVICE_INFO deviceInfo{ 0 };
-            deviceInfo.cbSize = deviceInfoSize;
-
-            if (GetRawInputDeviceInfo(
-                device.hDevice,
-                RIDI_DEVICEINFO,
-                &deviceInfo,
-                &deviceInfoSize) == -1)
-            {
-                continue;
-            }
-
-            if ((deviceInfo.hid.usUsagePage == 0x000D) &&
-                (deviceInfo.hid.usUsage == 0x0005))
-            {
-                return true;
-            }
-        }
         return false;
     }
 
-    static bool RegisterInput(HWND windowHandle)
-    {
-        // Precision Touchpad (PTP) in HID Clients Supported in Windows
-        // https://docs.microsoft.com/en-us/windows-hardware/drivers/hid/hid-architecture#hid-clients-supported-in-windows
-        RAWINPUTDEVICE device
-        {
-            0x000D,
-            0x0005,
-            0,
-            windowHandle
-        };
+    auto devices = new RAWINPUTDEVICELIST[deviceListCount];
 
-        return RegisterRawInputDevices(&device, 1, sizeof(RAWINPUTDEVICE));
+    if (GetRawInputDeviceList(
+        devices,
+        &deviceListCount,
+        rawInputDeviceListSize) != deviceListCount)
+    {
+        return false;
     }
 
-    static void ParseInput(LPARAM lParam)
+    for (UINT count = 0; count < deviceListCount; count++)
     {
-        contacts.clear();
-
-        //TCHAR msg[1024];
-
-        // Get RAWINPUT.
-        UINT rawInputSize = 0;
-        UINT rawInputHeaderSize = sizeof(RAWINPUTHEADER);
-        RAWINPUT* rawInput = 0;
-        BYTE* rawHidRawData = 0;
-        UINT length = 0;
-        BYTE* rawInputData = 0;
-        BYTE* rawHidRawDataPointer = 0;
-        int rawInputOffset = 0;
-
-        void* rawInputPointer = 0;
-
-        BYTE* preparsedDataPointer = 0;
-        HIDP_CAPS caps{};
-        UINT preparsedDataSize = 0;
-        USHORT valueCapsLength = 0;
-        HIDP_VALUE_CAPS* valueCaps = 0;
-
-        UINT scanTime = 0;
-        UINT contactCount = 0;
-        TouchpadContactCreator creator;
-
-        std::list<HIDP_VALUE_CAPS> orderedCaps;
-
-        if (GetRawInputData(
-            (HRAWINPUT)lParam,
-            RID_INPUT,
-            0,
-            &rawInputSize,
-            rawInputHeaderSize) != 0)
+        auto device = devices[count];
+        if (device.dwType != RIM_TYPEHID)
         {
-            goto error;
+            continue;
         }
 
-        //__try
-        //{
-        rawInputPointer = new BYTE[rawInputSize];
+        UINT deviceInfoSize = 0;
 
-        if (GetRawInputData(
-            (HRAWINPUT)lParam,
-            RID_INPUT,
-            rawInputPointer,
-            &rawInputSize,
-            rawInputHeaderSize) != rawInputSize)
-        {
-            goto error;
-        }
-
-        rawInput = (RAWINPUT*)rawInputPointer;
-
-        rawInputData = new BYTE[rawInputSize];
-        memcpy(rawInputData, rawInputPointer, rawInputSize);
-
-        length = rawInput->data.hid.dwSizeHid * rawInput->data.hid.dwCount;
-        rawHidRawData = new BYTE[length];
-        rawInputOffset = (int)rawInputSize - length;
-
-        memcpy(rawHidRawData, rawInputData + rawInputOffset, length);
-        //}
-        //__finally
-        //{
-        //  delete[] rawInputPointer;
-        //}
-
-        // Parse RAWINPUT.
-        rawHidRawDataPointer = new BYTE[length];
-        memcpy(rawHidRawDataPointer, rawHidRawData, length);
-
-        //        __try
-        //        {
         if (GetRawInputDeviceInfo(
-            rawInput->header.hDevice,
-            RIDI_PREPARSEDDATA,
+            device.hDevice,
+            RIDI_DEVICEINFO,
             NULL,
-            &preparsedDataSize) != 0)
+            &deviceInfoSize) != 0)
         {
-            goto error;
+            continue;
         }
 
-        preparsedDataPointer = new BYTE[preparsedDataSize];
+        RID_DEVICE_INFO deviceInfo{ 0 };
+        deviceInfo.cbSize = deviceInfoSize;
 
         if (GetRawInputDeviceInfo(
-            rawInput->header.hDevice,
-            RIDI_PREPARSEDDATA,
-            preparsedDataPointer,
-            &preparsedDataSize) != preparsedDataSize)
+            device.hDevice,
+            RIDI_DEVICEINFO,
+            &deviceInfo,
+            &deviceInfoSize) == -1)
         {
-            goto error;
+            continue;
         }
 
-        if (HidP_GetCaps(
-            (PHIDP_PREPARSED_DATA)preparsedDataPointer,
-            &caps) != HIDP_STATUS_SUCCESS)
+        if ((deviceInfo.hid.usUsagePage == 0x000D) &&
+            (deviceInfo.hid.usUsage == 0x0005))
         {
-            goto error;
-        }
-
-        valueCapsLength = caps.NumberInputValueCaps;
-        valueCaps = new HIDP_VALUE_CAPS[valueCapsLength];
-
-        if (HidP_GetValueCaps(
-            HIDP_REPORT_TYPE::HidP_Input,
-            valueCaps,
-            &valueCapsLength,
-            (PHIDP_PREPARSED_DATA)preparsedDataPointer) != HIDP_STATUS_SUCCESS)
-        {
-            goto error;
-        }
-
-        for (int count = 0; count < valueCapsLength; count++)
-        {
-            orderedCaps.push_back(valueCaps[count]);
-        }
-
-        orderedCaps.sort(OrderLinkCollection());
-
-        for (auto itter = orderedCaps.begin(); itter != orderedCaps.end(); itter++)
-        {
-            ULONG value = 0;
-            if (HidP_GetUsageValue(
-                HIDP_REPORT_TYPE::HidP_Input,
-                (*itter).UsagePage,
-                (*itter).LinkCollection,
-                (*itter).NotRange.Usage,
-                &value,
-                (PHIDP_PREPARSED_DATA)preparsedDataPointer,
-                (PCHAR)rawHidRawDataPointer,
-                length) != HIDP_STATUS_SUCCESS)
-            {
-                continue;
-            }
-
-            // Usage Page and ID in Windows Precision Touchpad input reports
-            // https://docs.microsoft.com/en-us/windows-hardware/design/component-guidelines/windows-precision-touchpad-required-hid-top-level-collections#windows-precision-touchpad-input-reports
-            switch ((*itter).LinkCollection)
-            {
-            case 0:
-                if (0x0D == (*itter).UsagePage)
-                {
-                    switch ((*itter).NotRange.Usage)
-                    {
-                    case 0x56: // Scan Time
-                        scanTime = value;
-                        break;
-
-                    case 0x54: // Contact Count
-                        contactCount = value;
-                        break;
-                    }
-                }
-                break;
-
-            default:
-                switch ((*itter).UsagePage)
-                {
-                case 0x0D:
-                    if ((*itter).NotRange.Usage == 0x51) // Contact ID
-                    {
-                        creator.ContactId = (int)value;
-                    }
-                    break;
-
-                case 0x01:
-                    if ((*itter).NotRange.Usage == 0x30) // X
-                    {
-                        creator.X = (int)value;
-                    }
-                    else if ((*itter).NotRange.Usage == 0x31) // Y
-                    {
-                        creator.Y = (int)value;
-                    }
-                    break;
-                }
-                break;
-            }
-
-            TouchpadContact contact(0, 0, 0);
-            if (creator.TryCreate(&contact))
-            {
-                contacts.push_back(contact);
-                if (contacts.size() >= contactCount)
-                    break;
-
-                creator.Clear();
-            }
-        }
-
-        //wsprintf(msg, L"Contact count: %d ", contacts.size());
-        //OutputDebugString(msg);
-        //for (auto contact = contacts.begin(); contact != contacts.end(); contact++)
-        //{
-        //    Ellipse(memDC, (*contact).X - mouseradius, (*contact).Y - mouseradius, (*contact).X + mouseradius, (*contact).Y + mouseradius);
-        //    wsprintf(msg, L" (%d,%d),", (*contact).X, (*contact).Y);
-        //    OutputDebugString(msg);
-        //}
-        //OutputDebugString(L"\r\n");
-    error:
-
-        delete[] rawHidRawDataPointer; rawHidRawDataPointer = 0;
-        delete[] preparsedDataPointer; preparsedDataPointer = 0;
-        delete[] rawInputPointer; rawInputPointer = 0;
-        delete[] rawInputData; rawInputData = 0;
-        delete[] rawHidRawData; rawHidRawData = 0;
-        delete[] valueCaps; valueCaps = 0;
-    }
-};
-
-void GetList()
-{
-    UINT nDevices, nStored, i;
-    RAWINPUTDEVICELIST* pRawInputDeviceList = 0;
-    
-    if (GetRawInputDeviceList(NULL, &nDevices, sizeof(RAWINPUTDEVICELIST)) != 0) 
-    { 
-        return; 
-    }
-
-    // The list of devices can change between calls to GetRawInputDeviceList,
-    // so call it again if the function returns ERROR_INSUFFICIENT_BUFFER
-    do
-    {
-        if ((pRawInputDeviceList = (PRAWINPUTDEVICELIST)realloc(pRawInputDeviceList, sizeof(RAWINPUTDEVICELIST) * nDevices)) == NULL)
-        { 
-            return;
-        }
-
-        nStored = GetRawInputDeviceList(pRawInputDeviceList, &nDevices, sizeof(RAWINPUTDEVICELIST));
-    } 
-    while (nStored == (UINT)-1 && GetLastError() == ERROR_INSUFFICIENT_BUFFER);
-
-    if (nStored == (UINT)-1) 
-    { 
-        return;
-    }
-
-    for (i = 0; i < nStored; ++i)
-    {
-        // do the job with each pRawInputDeviceList[i] element...
-        switch (pRawInputDeviceList[i].dwType)
-        {
-        case 0:
-//            OutputDebugString(L"Type 0\r\n");
-            break;
-        case 1:
-//            OutputDebugString(L"Type 1\r\n");
-            break;
-        case 2:
-//            OutputDebugString(L"Type 2\r\n");
-            break;
-        default:
-//            OutputDebugString(L"No Type \r\n");
-            break;
+            return true;
         }
     }
-
-    // after the job, free the RAWINPUTDEVICELIST
-    free(pRawInputDeviceList);
+    return false;
 }
 
+bool RegisterInput(HWND windowHandle)
+{
+    // Precision Touchpad (PTP) in HID Clients Supported in Windows
+    // https://docs.microsoft.com/en-us/windows-hardware/drivers/hid/hid-architecture#hid-clients-supported-in-windows
+    RAWINPUTDEVICE device
+    {
+        0x000D,
+        0x0005,
+        0,
+        windowHandle
+    };
+
+    return RegisterRawInputDevices(&device, 1, sizeof(RAWINPUTDEVICE));
+}
+
+void ParseInput(LPARAM lParam)
+{
+    contacts.clear();
+
+    // Get RAWINPUT.
+    UINT rawInputSize = 0;
+    UINT rawInputHeaderSize = sizeof(RAWINPUTHEADER);
+    RAWINPUT* rawInput = 0;
+    BYTE* rawHidRawData = 0;
+    UINT length = 0;
+    BYTE* rawInputData = 0;
+    BYTE* rawHidRawDataPointer = 0;
+    int rawInputOffset = 0;
+
+    void* rawInputPointer = 0;
+
+    BYTE* preparsedDataPointer = 0;
+    HIDP_CAPS caps{};
+    UINT preparsedDataSize = 0;
+    USHORT valueCapsLength = 0;
+    HIDP_VALUE_CAPS* valueCaps = 0;
+
+    UINT scanTime = 0;
+    UINT contactCount = 0;
+    TouchpadContactCreator creator;
+
+    std::list<HIDP_VALUE_CAPS> orderedCaps;
+
+    if (GetRawInputData(
+        (HRAWINPUT)lParam,
+        RID_INPUT,
+        0,
+        &rawInputSize,
+        rawInputHeaderSize) != 0)
+    {
+        goto error;
+    }
+
+    rawInputPointer = new BYTE[rawInputSize];
+
+    if (GetRawInputData(
+        (HRAWINPUT)lParam,
+        RID_INPUT,
+        rawInputPointer,
+        &rawInputSize,
+        rawInputHeaderSize) != rawInputSize)
+    {
+        goto error;
+    }
+
+    rawInput = (RAWINPUT*)rawInputPointer;
+
+    rawInputData = new BYTE[rawInputSize];
+    memcpy(rawInputData, rawInputPointer, rawInputSize);
+
+    length = rawInput->data.hid.dwSizeHid * rawInput->data.hid.dwCount;
+    rawHidRawData = new BYTE[length];
+    rawInputOffset = (int)rawInputSize - length;
+
+    memcpy(rawHidRawData, rawInputData + rawInputOffset, length);
+
+    // Parse RAWINPUT.
+    rawHidRawDataPointer = new BYTE[length];
+    memcpy(rawHidRawDataPointer, rawHidRawData, length);
+
+    if (GetRawInputDeviceInfo(
+        rawInput->header.hDevice,
+        RIDI_PREPARSEDDATA,
+        NULL,
+        &preparsedDataSize) != 0)
+    {
+        goto error;
+    }
+
+    preparsedDataPointer = new BYTE[preparsedDataSize];
+
+    if (GetRawInputDeviceInfo(
+        rawInput->header.hDevice,
+        RIDI_PREPARSEDDATA,
+        preparsedDataPointer,
+        &preparsedDataSize) != preparsedDataSize)
+    {
+        goto error;
+    }
+
+    if (HidP_GetCaps(
+        (PHIDP_PREPARSED_DATA)preparsedDataPointer,
+        &caps) != HIDP_STATUS_SUCCESS)
+    {
+        goto error;
+    }
+
+    valueCapsLength = caps.NumberInputValueCaps;
+    valueCaps = new HIDP_VALUE_CAPS[valueCapsLength];
+
+    if (HidP_GetValueCaps(
+        HIDP_REPORT_TYPE::HidP_Input,
+        valueCaps,
+        &valueCapsLength,
+        (PHIDP_PREPARSED_DATA)preparsedDataPointer) != HIDP_STATUS_SUCCESS)
+    {
+        goto error;
+    }
+
+    for (int count = 0; count < valueCapsLength; count++)
+    {
+        orderedCaps.push_back(valueCaps[count]);
+    }
+
+    orderedCaps.sort(OrderLinkCollection());
+
+    for (auto itter = orderedCaps.begin(); itter != orderedCaps.end(); itter++)
+    {
+        ULONG value = 0;
+        if (HidP_GetUsageValue(
+            HIDP_REPORT_TYPE::HidP_Input,
+            (*itter).UsagePage,
+            (*itter).LinkCollection,
+            (*itter).NotRange.Usage,
+            &value,
+            (PHIDP_PREPARSED_DATA)preparsedDataPointer,
+            (PCHAR)rawHidRawDataPointer,
+            length) != HIDP_STATUS_SUCCESS)
+        {
+            continue;
+        }
+
+        // Usage Page and ID in Windows Precision Touchpad input reports
+        // https://docs.microsoft.com/en-us/windows-hardware/design/component-guidelines/windows-precision-touchpad-required-hid-top-level-collections#windows-precision-touchpad-input-reports
+        switch ((*itter).LinkCollection)
+        {
+        case 0:
+            if (0x0D == (*itter).UsagePage)
+            {
+                switch ((*itter).NotRange.Usage)
+                {
+                case 0x56: // Scan Time
+                    scanTime = value;
+                    break;
+
+                case 0x54: // Contact Count
+                    contactCount = value;
+                    break;
+                }
+            }
+            break;
+
+        default:
+            switch ((*itter).UsagePage)
+            {
+            case 0x0D:
+                if ((*itter).NotRange.Usage == 0x51) // Contact ID
+                {
+                    creator.ContactId = (int)value;
+                }
+                break;
+
+            case 0x01:
+                if ((*itter).NotRange.Usage == 0x30) // X
+                {
+                    creator.X = (int)value;
+                }
+                else if ((*itter).NotRange.Usage == 0x31) // Y
+                {
+                    creator.Y = (int)value;
+                }
+                break;
+            }
+            break;
+        }
+
+        TouchpadContact contact(0, 0, 0);
+        if (creator.TryCreate(&contact))
+        {
+            contacts.push_back(contact);
+            if (contacts.size() >= contactCount)
+                break;
+
+            creator.Clear();
+        }
+    }
+
+error:
+
+    delete[] rawHidRawDataPointer; rawHidRawDataPointer = 0;
+    delete[] preparsedDataPointer; preparsedDataPointer = 0;
+    delete[] rawInputPointer; rawInputPointer = 0;
+    delete[] rawInputData; rawInputData = 0;
+    delete[] rawHidRawData; rawHidRawData = 0;
+    delete[] valueCaps; valueCaps = 0;
+}
 
 int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
                      _In_opt_ HINSTANCE hPrevInstance,
@@ -506,25 +423,6 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
     {
         return FALSE;
     }
-
-    GetList();
-
-    //
-
-    //Rid[0].usUsagePage = 0x01;          // HID_USAGE_PAGE_GENERIC
-    //Rid[0].usUsage = 0x02;              // HID_USAGE_GENERIC_MOUSE
-    //Rid[0].dwFlags = RIDEV_NOLEGACY;    // adds mouse and also ignores legacy mouse messages
-    //Rid[0].hwndTarget = 0;
-
-    ////Rid[0].usUsagePage = 0x01;          // HID_USAGE_PAGE_GENERIC
-    ////Rid[0].usUsage = 0x05;              // HID_USAGE_GENERIC_GAMEPAD
-    ////Rid[0].dwFlags = 0;                 // adds game pad
-    ////Rid[0].hwndTarget = 0;
-
-    //if (RegisterRawInputDevices(Rid, 1, sizeof(Rid[0])) == FALSE)
-    //{
-    //    //registration failed. Call GetLastError for the cause of the error.
-    //}
 
     HACCEL hAccelTable = LoadAccelerators(hInstance, MAKEINTRESOURCE(IDC_TOUCHPADTEST));
 
@@ -604,55 +502,17 @@ BOOL InitInstance(HINSTANCE hInstance, int nCmdShow)
    }
    EnableMouseInPointer(TRUE);
 
-   TouchpadExists = TouchpadHelper::Exists();
+   TouchpadExists = Exists();
 
    if (TouchpadExists)
    {
-       TouchpadHelper::RegisterInput(hWnd);
+       RegisterInput(hWnd);
    }
 
    ShowWindow(hWnd, nCmdShow);
    UpdateWindow(hWnd);
 
    return TRUE;
-}
-
-LRESULT OnTouch(HWND hWnd, WPARAM wParam, LPARAM lParam) 
-{
-    BOOL bHandled = FALSE;
-    UINT cInputs = LOWORD(wParam);
-    PTOUCHINPUT pInputs = new TOUCHINPUT[cInputs];
-    if (pInputs) 
-    {
-        if (GetTouchInputInfo((HTOUCHINPUT)lParam, cInputs, pInputs, sizeof(TOUCHINPUT))) 
-        {
-            for (UINT i = 0; i < cInputs; i++) {
-                TOUCHINPUT ti = pInputs[i];
-                //do something with each touch input entry
-            }
-            bHandled = TRUE;
-        }
-        else 
-        {
-            /* handle the error here */
-        }
-        delete[] pInputs;
-    }
-    else 
-    {
-        /* handle the error here, probably out of memory */
-    }
-    if (bHandled) 
-    {
-        // if you handled the message, close the touch input handle and return
-        CloseTouchInputHandle((HTOUCHINPUT)lParam);
-        return 0;
-    }
-    else 
-    {
-        // if you didn't handle the message, let DefWindowProc handle it
-        return DefWindowProc(hWnd, WM_TOUCH, wParam, lParam);
-    }
 }
 
 // This function is used to return an index given an ID
@@ -694,86 +554,8 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
     {
     case WM_INPUT:
     {
-        TouchpadHelper::ParseInput(lParam);
+        ParseInput(lParam);
         RedrawWindow(hWnd, NULL, NULL, RDW_INTERNALPAINT | RDW_INVALIDATE);
-
-        //UINT dwSize = 0;
-        //HRESULT hResult; 
-        //WCHAR szTempOutput[20480];
-
-        //GetRawInputData((HRAWINPUT)lParam, RID_INPUT, NULL, &dwSize, sizeof(RAWINPUTHEADER));
-        //LPBYTE lpb = new BYTE[dwSize];
-        //if (lpb == NULL)
-        //{
-        //    return 0;
-        //}
-
-        //if (GetRawInputData((HRAWINPUT)lParam, RID_INPUT, lpb, &dwSize, sizeof(RAWINPUTHEADER)) != dwSize)
-        //    OutputDebugString(TEXT("GetRawInputData does not return correct size !\n"));
-
-        //RAWINPUT* raw = (RAWINPUT*)lpb;
-
-        //if (raw->header.dwType == RIM_TYPEMOUSE)
-        //{
-        //    WCHAR szDeviceName[40960] = {'\0'};
-        //    UINT dwSize = 40960;
-        //    hResult = GetRawInputDeviceInfoW(raw->header.hDevice, RIDI_DEVICENAME, szDeviceName, &dwSize);
-
-        //    if (raw->data.mouse.usFlags & MOUSE_ATTRIBUTES_CHANGED)
-        //    { 
-        //        mousePoints[0][0] = -1;
-        //        mousePoints[0][1] = -1;
-        //    }
-        //    else
-        //    {
-        //        if (raw->data.mouse.usFlags & MOUSE_MOVE_ABSOLUTE)
-        //        {
-        //            bool isVirtualDesktop = (raw->data.mouse.usFlags & MOUSE_VIRTUAL_DESKTOP) == MOUSE_VIRTUAL_DESKTOP;
-
-        //            int width = GetSystemMetrics(isVirtualDesktop ? SM_CXVIRTUALSCREEN : SM_CXSCREEN);
-        //            int height = GetSystemMetrics(isVirtualDesktop ? SM_CYVIRTUALSCREEN : SM_CYSCREEN);
-
-        //            int absoluteX = int((raw->data.mouse.lLastX / 65535.0f) * width);
-        //            int absoluteY = int((raw->data.mouse.lLastY / 65535.0f) * height);
-
-        //            mousePoints[0][0] = absoluteX;
-        //            mousePoints[0][1] = absoluteY;
-        //        }
-        //        else
-        //        {
-        //            float width = (float)GetSystemMetrics(SM_CXSCREEN)*100;
-        //            float height = (float)GetSystemMetrics(SM_CYSCREEN)*100;
-
-        //            auto absoluteX = ((float)raw->data.mouse.lLastX / 65535.0f) * width;
-        //            auto absoluteY = ((float)raw->data.mouse.lLastY / 65535.0f) * height;
-
-        //            mousePoints[0][0] += absoluteX;
-        //            mousePoints[0][1] += absoluteY;
-        //        }
-        //    }
-
-        //    hResult = StringCchPrintf(szTempOutput, 20480,
-        //        TEXT("Mouse: usFlags=%04x ulButtons=%04x usButtonFlags=%04x usButtonData=%04x ulRawButtons=%04x lLastX=%04x lLastY=%04x Name=%s ulExtraInformation=%04x\r\n"),
-        //        raw->data.mouse.usFlags,
-        //        raw->data.mouse.ulButtons,
-        //        raw->data.mouse.usButtonFlags,
-        //        raw->data.mouse.usButtonData,
-        //        raw->data.mouse.ulRawButtons,
-        //        raw->data.mouse.lLastX,
-        //        raw->data.mouse.lLastY,
-        //        szDeviceName,
-        //        raw->data.mouse.ulExtraInformation);
-
-        //    if (FAILED(hResult))
-        //    {
-        //        // TODO: write error handler
-        //    }
-        //    OutputDebugString(szTempOutput);
-        //    RedrawWindow(hWnd, NULL, NULL, RDW_INTERNALPAINT | RDW_INVALIDATE);
-        //}
-
-        //delete[] lpb;
-        //return 0;
     }
     break;
 
@@ -786,32 +568,6 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
         auto x = GET_X_LPARAM(lParam);
         auto y = GET_Y_LPARAM(lParam);
         auto index = GetContactIndex(id);
-
-        POINTER_INPUT_TYPE ptrTypeInfo = { 0 };
-        GetPointerType(id, &ptrTypeInfo);
-
-        OutputDebugString(L"Pointer Update ");
-        switch (ptrTypeInfo)
-        {
-        case PT_TOUCHPAD:
-            OutputDebugString(L"Touchpad");
-            break;
-        case PT_TOUCH:
-            OutputDebugString(L"Touch");
-            break;
-        case PT_MOUSE:
-            OutputDebugString(L"Mouse");
-            break;
-        case PT_PEN:
-            OutputDebugString(L"Pen");
-            break;
-        case PT_POINTER:
-            OutputDebugString(L"Pointer");
-            break;
-        }
-
-        OutputDebugString(L"\r\n");
-
         if (index < MAXPOINTS)
         {
             ptInput.x = x;
@@ -828,7 +584,6 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 
         // pass touch messages to the touch handler 
     case WM_TOUCH:
-//        OnTouch(hWnd, wParam, lParam);
         cInputs = LOWORD(wParam);
         pInputs = new TOUCHINPUT[cInputs];
         if (pInputs) 
@@ -895,6 +650,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
         {
             hdc = BeginPaint(hWnd, &ps);
             RECT client;
+            int x, y;
             GetClientRect(hWnd, &client);
 
             // start double buffering
@@ -908,7 +664,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
             FillRect(memDC, &client, brush);
 
             //Draw Touched Points                
-            for (i = 0; i < MAXPOINTS; i++) 
+            for (int i = 0; i < MAXPOINTS; i++) 
             {
                 auto colour = CreateSolidBrush(colors[i]);
                 SelectObject(memDC, colour);
@@ -919,36 +675,10 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
                     Ellipse(memDC, x - radius, y - radius, x + radius, y + radius);
                 }
 
-                RECT rect; 
-                // Get the window size to adjust the touchpad points to fit the window.
-                GetWindowRect(hWnd, &rect);
-
-                // x and y are in the range 0 to touchpadSize
-                // output coordinates are in the range 0 to Window size
-                for (auto contact = contacts.begin(); contact != contacts.end(); contact++)
-                {
-                    POINT drawcenter
-                    { 
-                        (((float)(*contact).X) / touchpadSize.x) * (rect.right - rect.left),
-                        (((float)(*contact).Y) / touchpadSize.y) * (rect.bottom - rect.top) };
-
-                    Ellipse(memDC, drawcenter.x - mouseradius, drawcenter.y - mouseradius, drawcenter.x + mouseradius, drawcenter.y + mouseradius);
-                }
-                //x = (int)mousePoints[i][0];
-                //y = (int)mousePoints[i][1];
-                //if (x > 0 && y > 0)
-                //{
-                //    Ellipse(memDC, x - mouseradius, y - mouseradius, x + mouseradius, y + mouseradius);
-                //}
-
                 DeleteObject(colour);
             }
 
-            RECT rect;
-            // Get the window size to adjust the touchpad points to fit the window.
-            GetWindowRect(hWnd, &rect);
             int i = 0;
-
             // Draw the touchpad
             for (auto contact = contacts.begin(); contact != contacts.end(); contact++)
             {
@@ -959,8 +689,9 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
                 // output coordinates are in the range 0 to Window size
                 POINT drawcenter
                 {
-                    (((float)(*contact).X) / touchpadSize.x) * (rect.right - rect.left),
-                    (((float)(*contact).Y) / touchpadSize.y) * (rect.bottom - rect.top) };
+                    (LONG)((((float)(*contact).X) / touchpadSize.x)* (client.right - client.left)),
+                    (LONG)((((float)(*contact).Y) / touchpadSize.y)* (client.bottom - client.top))
+                };
 
                 Ellipse(memDC, drawcenter.x - mouseradius, drawcenter.y - mouseradius, drawcenter.x + mouseradius, drawcenter.y + mouseradius);
 
@@ -977,7 +708,6 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
             hMemBmp = 0;
             memDC = 0;
             DeleteObject(brush);
-
         }
         break;
     case WM_DESTROY:
